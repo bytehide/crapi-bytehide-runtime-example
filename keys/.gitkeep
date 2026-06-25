@@ -1,0 +1,1 @@
+# crAPI-identity monta ./keys en /app/keys y genera aquí sus llaves JWT al arrancar.

@@ -1,0 +1,60 @@
+# ByteHide Runtime — overlay para crAPI. `docker compose` lo carga automáticamente junto a
+# docker-compose.yml. Construye los tres servicios instrumentables con ByteHide Runtime y define las
+# variables del runtime. Los secretos van por `.env` (ver `.env.example`), no se hornean en la imagen.
+services:
+
+  # crapi-identity (Java / Spring Boot) — agente de ByteHide Runtime
+  crapi-identity:
+    build:
+      context: .
+      dockerfile: Dockerfile.bh-identity
+      args:
+        BASE_IMAGE: crapi/crapi-identity:${VERSION:-latest}
+    image: crapi-identity-bytehide:local
+    environment:
+      - JAVA_TOOL_OPTIONS=-javaagent:/opt/bytehide/monitor-java-agent.jar
+      - BYTEHIDE_MONITOR_CONFIG=/opt/bytehide/monitor.json
+      - BYTEHIDE_MONITOR_TOKEN=${MONITOR_JAVA_KEY:-}      # token del proyecto Java (identity)
+      - BYTEHIDE_MONITOR_AUTO=1
+      - BYTEHIDE_HEARTBEAT_MS=${BYTEHIDE_HEARTBEAT_MS:-}
+      - BYTEHIDE_MONITOR_DEBUG=${MONITOR_DEBUG:-}
+      - BYTEHIDE_MONITOR_STAGING=${MONITOR_STAGING:-}
+      - BYTEHIDE_SESSION_BLOCK=${MONITOR_SESSION_BLOCK:-}
+      # Escaneo del cuerpo de la respuesta (detección de fugas de datos en la respuesta).
+      - BYTEHIDE_RESPONSE_DLP=${BYTEHIDE_RESPONSE_DLP:-1}
+
+  # crapi-workshop (Python / Django) — SDK de ByteHide Runtime
+  crapi-workshop:
+    build:
+      context: .
+      dockerfile: Dockerfile.bh-python
+      args:
+        BASE_IMAGE: crapi/crapi-workshop:${VERSION:-latest}
+    image: crapi-workshop-bytehide:local
+    environment:
+      - BYTEHIDE_MONITOR_TOKEN=${MONITOR_PYTHON_KEY:-}   # token del proyecto Python (workshop)
+      - BYTEHIDE_MONITOR_AUTO=1
+      - BYTEHIDE_HEARTBEAT_MS=${BYTEHIDE_HEARTBEAT_MS:-}
+      - BYTEHIDE_MONITOR_DEBUG=${MONITOR_DEBUG:-}
+      - BYTEHIDE_MONITOR_STAGING=${MONITOR_STAGING:-}
+      - BYTEHIDE_SESSION_BLOCK=${MONITOR_SESSION_BLOCK:-}
+      # Un worker para mantener el estado de los detectores en este despliegue de un solo nodo.
+      - GUNICORN_WORKERS=${GUNICORN_WORKERS:-1}
+      # Detección de PII en respuestas (fuga de datos de contacto de otros usuarios).
+      - BYTEHIDE_DLP_PII=${BYTEHIDE_DLP_PII:-1}
+
+  # crapi-chatbot (Python / LLM) — ByteHide AI Runtime
+  crapi-chatbot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bh-python
+      args:
+        BASE_IMAGE: crapi/crapi-chatbot:${VERSION:-latest}
+    image: crapi-chatbot-bytehide:local
+    environment:
+      - BYTEHIDE_MONITOR_TOKEN=${MONITOR_PYTHON_KEY:-}   # token del proyecto Python (chatbot)
+      - BYTEHIDE_MONITOR_AUTO=1
+      - BYTEHIDE_HEARTBEAT_MS=${BYTEHIDE_HEARTBEAT_MS:-}
+      - BYTEHIDE_MONITOR_DEBUG=${MONITOR_DEBUG:-}
+      - BYTEHIDE_MONITOR_STAGING=${MONITOR_STAGING:-}
+      - BYTEHIDE_SESSION_BLOCK=${MONITOR_SESSION_BLOCK:-}

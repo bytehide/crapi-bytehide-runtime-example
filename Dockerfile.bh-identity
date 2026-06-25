@@ -1,0 +1,12 @@
+# crapi-identity (Java / Spring Boot) integrado con ByteHide Runtime.
+# El agente Java (javaagent, Premain) activa la protección al arrancar la JVM mediante
+# JAVA_TOOL_OPTIONS=-javaagent:... (ver el override), sin modificar el código de la aplicación.
+ARG BASE_IMAGE=crapi/crapi-identity:latest
+FROM ${BASE_IMAGE}
+
+USER root
+# Agente Java de ByteHide Runtime. El token se pasa por variable de entorno (ver el override).
+COPY packages/monitor-java-agent-1.0.4.jar /opt/bytehide/monitor-java-agent.jar
+# Configuración del agente (preset cloud: los detectores arrancan activos).
+# Se referencia por BYTEHIDE_MONITOR_CONFIG en el override.
+COPY packages/monitor.json /opt/bytehide/monitor.json

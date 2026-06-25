@@ -1,0 +1,142 @@
+# crapi-workshop / crapi-chatbot (Python) integrados con ByteHide Runtime.
+# El paquete instala un autostart que activa la protección al iniciar el intérprete e instrumenta
+# Flask/Django/requests y los drivers de base de datos sin modificar el código de la aplicación.
+# BASE_IMAGE la define el override por cada servicio.
+ARG BASE_IMAGE=crapi/crapi-workshop:latest
+FROM ${BASE_IMAGE}
+
+USER root
+# Instala ByteHide Runtime (SDK compilado). Se selecciona automaticamente el wheel que corresponde
+# a la libc de esta imagen (musl/glibc) y a su arquitectura (x86_64/aarch64). El token va por env.
+COPY packages/wheels/ /tmp/bh-wheels/
+RUN LIBC="$(python3 -c 'import platform; print("glibc" if platform.libc_ver()[0] == "glibc" else "musl")')" \
+    && echo "ByteHide Runtime: instalando wheel ${LIBC}" \
+    && pip install --no-cache-dir --find-links "/tmp/bh-wheels/${LIBC}" bytehide-monitor \
+    && rm -rf /tmp/bh-wheels
+
+# Ajustes de compatibilidad del chatbot de crAPI. Cada bloque es idempotente y solo aplica si el
+# fichero correspondiente existe (en los demás servicios no hace nada).
+
+# 1) El cliente HTTP del chatbot acepta los certificados self-signed del entorno de demo.
+RUN python3 - <<'PY'
+import site, os
+sp = site.getsitepackages()[0]
+patch = (
+    "try:\n"
+    "    import functools, httpx\n"
+    "    for _c in (httpx.Client, httpx.AsyncClient):\n"
+    "        _o = _c.__init__\n"
+    "        def _mk(o):\n"
+    "            @functools.wraps(o)\n"
+    "            def _i(self, *a, **k):\n"
+    "                k.setdefault('verify', False)\n"
+    "                return o(self, *a, **k)\n"
+    "            return _i\n"
+    "        _c.__init__ = _mk(_o)\n"
+    "except Exception:\n"
+    "    pass\n"
+)
+open(os.path.join(sp, "bh_httpx_noverify.py"), "w").write(patch)
+open(os.path.join(sp, "zz_bh_httpx_noverify.pth"), "w").write("import bh_httpx_noverify\n")
+PY
+
+# 2) El cliente MCP del chatbot conecta por 127.0.0.1 y el agente tolera que el MCP no esté disponible.
+RUN python3 - <<'PY'
+import os
+mc = "/app/chatbot/mcp_client.py"
+if os.path.exists(mc):
+    s = open(mc).read().replace("http://localhost:5500/mcp/", "http://127.0.0.1:5500/mcp/")
+    open(mc, "w").write(s)
+la = "/app/chatbot/langgraph_agent.py"
+if os.path.exists(la):
+    s = open(la).read()
+    old = "mcp_tools = await mcp_client.get_tools()"
+    if old in s and "bh-tolerant" not in s:
+        out = []
+        for ln in s.splitlines(keepends=True):
+            if old in ln:
+                ind = ln[: len(ln) - len(ln.lstrip())]
+                out.append(f"{ind}try:\n{ind}    {old}\n{ind}except Exception:  # bh-tolerant\n{ind}    mcp_tools = []\n")
+            else:
+                out.append(ln)
+        open(la, "w").write("".join(out))
+PY
+
+# 3) El chatbot usa Quart: un bloqueo de ByteHide AI Runtime se devuelve como respuesta 403 (RFC 7807).
+RUN python3 - <<'PY'
+import os
+ap = "/app/chatbot/app.py"
+if os.path.exists(ap):
+    s = open(ap).read()
+    if "bh-quart-block" not in s:
+        patch = '''
+
+# ByteHide AI Runtime: un bloqueo de la politica de seguridad se devuelve como 403 (RFC 7807).  # bh-quart-block
+try:
+    from bytehide_monitor.core.protection.security_exception import SecurityException as _BHSecExc
+
+    @app.errorhandler(_BHSecExc)
+    async def _bh_security_block(exc):
+        dec = getattr(exc, "decision", None)
+        status = getattr(dec, "http_status", None) or getattr(dec, "status", None) or 403
+        body = {
+            "status": status,
+            "message": "Request blocked.",
+            "info": "This application is protected by ByteHide AI Runtime. Learn more at https://bytehide.com",
+            "detail": str(exc),
+            "reference": getattr(dec, "reference_id", None) or getattr(dec, "reference", None),
+        }
+        return jsonify(body), status
+except Exception:
+    pass
+'''
+        open(ap, "w").write(s + patch)
+PY
+
+# 4) Si ByteHide AI Runtime detiene una llamada del agente, se devuelve como bloqueo 403 limpio.
+RUN python3 - <<'PY'
+import os
+la = "/app/chatbot/langgraph_agent.py"
+if os.path.exists(la):
+    s = open(la).read()
+    if "bh-tool-block" not in s and "await agent.ainvoke(" in s:
+        helpers = '''
+
+# ByteHide AI Runtime: si una llamada del agente es detenida por la politica de seguridad, se propaga  # bh-tool-block
+# como SecurityException para que el manejador la devuelva como una respuesta 403 limpia.
+def _bh_is_security_block(exc):
+    try:
+        from bytehide_monitor.core.protection.security_exception import SecurityException as _SE
+    except Exception:
+        _SE = None
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _SE is not None and isinstance(cur, _SE):
+            return True
+        t = (type(cur).__name__ + ": " + str(cur)).lower()
+        if (("tool_calls" in t and "must be a response" in t)
+                or "bytehide" in t or "blocked by security policy" in t
+                or ("403" in t and "forbidden" in t)):
+            return True
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return False
+
+
+async def _bh_ainvoke(agent, *args, **kwargs):
+    try:
+        return await agent.ainvoke(*args, **kwargs)
+    except Exception as _bh_exc:
+        if _bh_is_security_block(_bh_exc):
+            from bytehide_monitor.cloud.scanner.block_decision import BlockDecision
+            from bytehide_monitor.core.protection.security_exception import SecurityException
+            raise SecurityException(BlockDecision.firewall(
+                "Blocked by security policy.",
+                "BH-LLM-TOOL-BLOCK",
+            )) from _bh_exc
+        raise
+'''
+        s = s.replace("await agent.ainvoke(", "await _bh_ainvoke(agent, ") + helpers
+        open(la, "w").write(s)
+PY

@@ -1,0 +1,13 @@
+# Secretos locales: nunca commitear el .env real (solo .env.example).
+.env
+
+# Llaves que crAPI-identity genera en runtime (montadas en ./keys).
+keys/*
+!keys/.gitkeep
+
+# Caché de Python del script de ataque.
+__pycache__/
+*.pyc
+
+# Los paquetes RASP (packages/*.whl, packages/*.jar) y packages/monitor.json SÍ se commitean:
+# vienen en el repo para que el cliente solo tenga que hacer `docker compose up`.
