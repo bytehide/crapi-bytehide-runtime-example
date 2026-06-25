@@ -6,12 +6,15 @@ ARG BASE_IMAGE=crapi/crapi-workshop:latest
 FROM ${BASE_IMAGE}
 
 USER root
-# Instala ByteHide Runtime (SDK compilado). Se selecciona automaticamente el wheel que corresponde
-# a la libc de esta imagen (musl/glibc) y a su arquitectura (x86_64/aarch64). El token va por env.
+# Instala ByteHide Runtime (SDK compilado) desde los wheels LOCALES del repo (packages/wheels/).
+# --no-index obliga a pip a NO usar ningun indice ni URL remota: instala SIEMPRE el wheel local que
+# corresponde a la libc de esta imagen (musl/glibc) y su arquitectura (x86_64/aarch64). wrapt (la unica
+# dependencia) se instala antes, porque con --no-index pip no puede bajarla de PyPI. El token va por env.
 COPY packages/wheels/ /tmp/bh-wheels/
-RUN LIBC="$(python3 -c 'import platform; print("glibc" if platform.libc_ver()[0] == "glibc" else "musl")')" \
-    && echo "ByteHide Runtime: instalando wheel ${LIBC}" \
-    && pip install --no-cache-dir --find-links "/tmp/bh-wheels/${LIBC}" bytehide-monitor \
+RUN pip install --no-cache-dir "wrapt>=1.14" \
+    && LIBC="$(python3 -c 'import platform; print("glibc" if platform.libc_ver()[0] == "glibc" else "musl")')" \
+    && echo "ByteHide Runtime: instalando wheel ${LIBC} (local, sin indice)" \
+    && pip install --no-cache-dir --no-index --find-links "/tmp/bh-wheels/${LIBC}" bytehide-monitor \
     && rm -rf /tmp/bh-wheels
 
 # Ajustes de compatibilidad del chatbot de crAPI. Cada bloque es idempotente y solo aplica si el
